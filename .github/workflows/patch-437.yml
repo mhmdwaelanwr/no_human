@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/review-diff-coverage-437
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,479 +13,45 @@ jobs:
   patch-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout branch
+        uses: actions/checkout@v4
         with:
           ref: fix/review-diff-coverage-437
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install uv
         run: python -m pip install uv
 
-      - name: Apply issue 437 fix
+      - name: Apply patch
+        run: python .github/scripts/patch_437.py
+
+      - name: Install project dependencies
+        run: uv sync --group dev
+
+      - name: Run issue 437 regression tests
+        run: uv run pytest tests/test_diff_coverage.py -q
+
+      - name: Run adjacent git-diff security regression
+        run: uv run pytest tests/test_git_config_exec.py -q
+
+      - name: Compile review package
+        run: python -m compileall -q src/no_human/review
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Commit validated patch
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          reviewer = Path('src/no_human/review/reviewer.py')
-          text = reviewer.read_text()
-
-          def replace_once(old: str, new: str) -> None:
-              global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected exactly one match, found {count}: {old[:80]!r}')
-              text = text.replace(old, new, 1)
-
-          replace_once(
-              'from ..core.task import Task\n',
-              'from ..core.task import Task\n'
-              'from ..review.diff_coverage import DiffCoverageError, budget_diff\n',
-          )
-
-          replace_once(
-              '''def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int]:\n'''
-              '''    """Return (truncated_diff, total_length).\n\n'''
-              '''    `--no-ext-diff --no-textconv` are a SECURITY boundary, not formatting:\n'''
-              '''    without them a `diff.external` or `diff.<driver>.textconv` git-config key —\n'''
-              '''    which a coder can plant in the reviewed repo's shared `.git/config` — names\n'''
-              '''    a program git spawns while building this diff, inside the reviewer process\n'''
-              '''    (no OS sandbox). The env is additionally scrubbed of foreign secrets via\n'''
-              '''    `_git_subprocess_env` so an executed program finds no credential; the two\n'''
-              '''    flags mean it is not spawned in the first place. Mirrors the hardening on\n'''
-              '''    `lint_evidence.py`/`testing/ownership.py` and `vcs/git.GitRepo`."""\n'''
-              '''    from ..vcs.git import _git_subprocess_env\n\n'''
-              '''    proc = subprocess.run(\n'''
-              '''        ["git", "-c", "core.fsmonitor=false", "diff", f"{before}..{after}",\n'''
-              '''         "--stat", "--patch", "--no-color", "--no-ext-diff", "--no-textconv"],\n'''
-              '''        cwd=repo_path, capture_output=True, text=True,\n'''
-              '''        env=_git_subprocess_env("diff"),\n'''
-              '''    )\n'''
-              '''    raw = proc.stdout or ""\n'''
-              '''    return raw[:_DIFF_CAP], len(raw)\n''',
-              '''def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int, list[str]]:\n'''
-              '''    """Return a bounded diff plus the paths whose patches were cut.\n\n'''
-              '''    Small diffs stay byte-identical. Large diffs are budgeted per file so path\n'''
-              '''    order cannot hide a changed file from the review gate. The git hardening\n'''
-              '''    flags remain the security boundary described below.\n'''
-              '''    """\n'''
-              '''    from ..vcs.git import _git_subprocess_env\n\n'''
-              '''    proc = subprocess.run(\n'''
-              '''        ["git", "-c", "core.fsmonitor=false", "diff", f"{before}..{after}",\n'''
-              '''         "--stat", "--patch", "--no-color", "--no-ext-diff", "--no-textconv"],\n'''
-              '''        cwd=repo_path, capture_output=True, text=True,\n'''
-              '''        env=_git_subprocess_env("diff"),\n'''
-              '''    )\n'''
-              '''    raw = proc.stdout or ""\n'''
-              '''    try:\n'''
-              '''        rendered, cut_paths = budget_diff(raw, _DIFF_CAP)\n'''
-              '''    except DiffCoverageError as exc:\n'''
-              '''        raise ReviewerUnavailable(f"review diff coverage unavailable: {exc}") from exc\n'''
-              '''    return rendered, len(raw), cut_paths\n''',
-          )
-
-          replace_once(
-              '        diff, total = _git_diff(lpath, lbefore, "HEAD")\n',
-              '        diff, total, _cut_paths = _git_diff(lpath, lbefore, "HEAD")\n',
-          )
-
-          replace_once(
-              '        full_files, omitted_files = "", []\n',
-              '        full_files, omitted_files = "", []\n        cut_paths: list[str] = []\n',
-          )
-
-          replace_once(
-              '            diff, diff_total_len = _git_diff(repo_path, before_ref, after_ref)\n',
-              '            diff, diff_total_len, cut_paths = _git_diff(repo_path, before_ref, after_ref)\n',
-          )
-
-          replace_once(
-              '''            decision = await self._agent_review(\n'''
-              '''                prompt, repo_path, before_ref=before_ref,\n'''
-              '''                max_turns=self._tier_review_turns(task),\n'''
-              '''                extra_repos=linked_repos or None,\n'''
-              '''            )\n''',
-              '''            decision = await self._agent_review(\n'''
-              '''                prompt, repo_path, before_ref=before_ref,\n'''
-              '''                max_turns=self._tier_review_turns(task),\n'''
-              '''                extra_repos=linked_repos or None,\n'''
-              '''                required_inspections=cut_paths,\n'''
-              '''            )\n''',
-          )
-
-          replace_once(
-              '''        extra_repos: list[tuple[Path, str]] | None = None,\n'''
-              '''    ) -> ReviewDecision:\n'''
-              '''        """Multi-turn review — model can explore the repo with read-only tools.\n''',
-              '''        extra_repos: list[tuple[Path, str]] | None = None,\n'''
-              '''        required_inspections: list[str] | None = None,\n'''
-              '''    ) -> ReviewDecision:\n'''
-              '''        """Multi-turn review — model can explore the repo with read-only tools.\n''',
-          )
-
-          replace_once(
-              '''                before_ref=before_ref, verify_citations=verify_citations,\n'''
-              '''                extra_repos=extra_repos,\n'''
-              '''            )\n''',
-              '''                before_ref=before_ref, verify_citations=verify_citations,\n'''
-              '''                extra_repos=extra_repos, required_inspections=required_inspections,\n'''
-              '''            )\n''',
-          )
-
-          replace_once(
-              '''        extra_repos: list[tuple[Path, str]] | None = None,\n'''
-              '''    ) -> tuple[ReviewDecision | None, str, AgentResult | None]:\n'''
-              '''        """One reviewer session.\n''',
-              '''        extra_repos: list[tuple[Path, str]] | None = None,\n'''
-              '''        required_inspections: list[str] | None = None,\n'''
-              '''    ) -> tuple[ReviewDecision | None, str, AgentResult | None]:\n'''
-              '''        """One reviewer session.\n''',
-          )
-
-          replace_once(
-              '''        all_text_parts: list[str] = []\n'''
-              '''        original_on_event = self._on_event\n\n'''
-              '''        def _capture_event(event):\n'''
-              '''            if event.text:\n'''
-              '''                all_text_parts.append(event.text)\n'''
-              '''            if original_on_event:\n'''
-              '''                original_on_event(event)\n''',
-              '''        all_text_parts: list[str] = []\n'''
-              '''        required = set(required_inspections or ())\n'''
-              '''        inspected: set[str] = set()\n'''
-              '''        original_on_event = self._on_event\n\n'''
-              '''        def _capture_event(event):\n'''
-              '''            if event.text:\n'''
-              '''                all_text_parts.append(event.text)\n'''
-              '''            if required and getattr(event, "kind", "") == "tool_use":\n'''
-              '''                payload = json.dumps(getattr(event, "tool_input", None) or {},\n'''
-              '''                                     sort_keys=True, default=str)\n'''
-              '''                inspected.update(path for path in required if path in payload)\n'''
-              '''            if original_on_event:\n'''
-              '''                original_on_event(event)\n''',
-          )
-
-          replace_once(
-              '''        decision.output_tokens = getattr(result, "output_tokens", None)\n'''
-              '''        return decision, "", result\n''',
-              '''        decision.output_tokens = getattr(result, "output_tokens", None)\n'''
-              '''        missing = sorted(required - inspected)\n'''
-              '''        if decision.passed and missing:\n'''
-              '''            return None, ("reviewer passed without inspecting truncated changed "\n'''
-              '''                          f"file(s): {', '.join(missing)}"), result\n'''
-              '''        return decision, "", result\n''',
-          )
-
-          reviewer.write_text(text)
-
-          Path('src/no_human/review/diff_coverage.py').write_text(r'''"""Bound large review diffs without letting git path order hide changed files."""
-
-from __future__ import annotations
-
-import ast
-import re
-import shlex
-
-
-_COVERAGE_NOTE = (
-    "\nDIFF COVERAGE — the following changed-file patches were cut by the "
-    "per-file budget. Before PASS, inspect every path below with read/search "
-    "tools so the omitted patch content is covered:\n"
-)
-_MIN_HEADER_BUDGET = 1
-_MAX_STAT_CHARS = 2_000
-
-
-class DiffCoverageError(RuntimeError):
-    """The bounded representation cannot honestly show every changed file."""
-
-
-def _unquote_path(token: str) -> str:
-    token = token.strip()
-    if token.startswith('"'):
-        try:
-            token = ast.literal_eval(token)
-        except (SyntaxError, ValueError):
-            token = token.strip('"')
-    if token.startswith(("a/", "b/")):
-        token = token[2:]
-    return token
-
-
-def _patch_path(chunk: str) -> str:
-    for line in chunk.splitlines():
-        if line.startswith("rename to "):
-            return _unquote_path(line[len("rename to "):])
-        if line.startswith("+++ "):
-            candidate = line[4:].strip()
-            if candidate != "/dev/null":
-                return _unquote_path(candidate)
-    for line in chunk.splitlines():
-        if line.startswith("--- "):
-            candidate = line[4:].strip()
-            if candidate != "/dev/null":
-                return _unquote_path(candidate)
-    first = chunk.splitlines()[0] if chunk else ""
-    try:
-        parts = shlex.split(first)
-    except ValueError:
-        parts = []
-    if len(parts) >= 4 and parts[:2] == ["diff", "--git"]:
-        return _unquote_path(parts[3])
-    raise DiffCoverageError("could not identify a changed path from a patch header")
-
-
-def _split(raw: str) -> tuple[str, list[str]]:
-    starts = [m.start() for m in re.finditer(r"(?m)^diff --git ", raw)]
-    if not starts:
-        raise DiffCoverageError("large diff has no per-file patch boundaries")
-    prefix = raw[:starts[0]]
-    chunks = [
-        raw[start:(starts[i + 1] if i + 1 < len(starts) else len(raw))]
-        for i, start in enumerate(starts)
-    ]
-    return prefix, chunks
-
-
-def _allocate(chunks: list[str], budget: int) -> list[int]:
-    headers = []
-    for chunk in chunks:
-        newline = chunk.find("\n")
-        headers.append(len(chunk) if newline < 0 else newline + 1)
-    minimum = sum(max(_MIN_HEADER_BUDGET, n) for n in headers)
-    if minimum > budget:
-        raise DiffCoverageError(
-            f"{len(chunks)} changed files need {minimum:,} chars just for patch headers, "
-            f"but only {budget:,} are available"
-        )
-    alloc = [min(len(chunk), max(_MIN_HEADER_BUDGET, head)) for chunk, head in zip(chunks, headers)]
-    remaining = budget - sum(alloc)
-    active = {i for i, chunk in enumerate(chunks) if alloc[i] < len(chunk)}
-    while active and remaining:
-        share = max(1, remaining // len(active))
-        progressed = False
-        for i in list(active):
-            need = len(chunks[i]) - alloc[i]
-            grant = min(need, share, remaining)
-            if grant:
-                alloc[i] += grant
-                remaining -= grant
-                progressed = True
-            if alloc[i] == len(chunks[i]):
-                active.remove(i)
-            if not remaining:
-                break
-        if not progressed:
-            break
-    return alloc
-
-
-def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
-    """Return ``raw`` unchanged when it fits, else fairly budget every patch.
-
-    The exclusion set is intentionally empty and code-owned: target repositories
-    cannot configure paths out of coverage. If the cap cannot hold at least each
-    patch header plus the explicit cut-path ledger, fail instead of silently
-    hiding a file.
-    """
-    if len(raw) <= cap:
-        return raw, []
-
-    prefix, chunks = _split(raw)
-    paths = [_patch_path(chunk) for chunk in chunks]
-    # Reserve the worst-case ledger (all paths cut) before assigning patch text.
-    worst_note = _COVERAGE_NOTE + "".join(f"- {path}\n" for path in paths)
-    separators = max(0, len(chunks) - 1)
-    available = cap - len(worst_note) - separators
-    if available <= 0:
-        raise DiffCoverageError("cut-path ledger alone exceeds the diff cap")
-
-    first_lines = [chunk.find("\n") + 1 if "\n" in chunk else len(chunk) for chunk in chunks]
-    required = sum(first_lines)
-    if required > available:
-        raise DiffCoverageError(
-            f"{len(chunks)} changed files cannot all expose their patch headers within {cap:,} chars"
-        )
-
-    prefix_budget = min(len(prefix), _MAX_STAT_CHARS, available - required)
-    patch_budget = available - prefix_budget
-    allocation = _allocate(chunks, patch_budget)
-    cut_paths = [path for path, chunk, take in zip(paths, chunks, allocation) if take < len(chunk)]
-    note = _COVERAGE_NOTE + "".join(f"- {path}\n" for path in cut_paths)
-    rendered = prefix[:prefix_budget] + "\n".join(
-        chunk[:take] for chunk, take in zip(chunks, allocation)
-    ) + note
-    if len(rendered) > cap:
-        raise DiffCoverageError("bounded diff exceeded its cap after rendering")
-    return rendered, cut_paths
-''')
-
-          Path('tests/test_diff_coverage.py').write_text(r'''from __future__ import annotations
-
-import json
-import subprocess
-from pathlib import Path
-
-import pytest
-
-from no_human.agent.claude_backend import AgentEvent, AgentResult
-from no_human.core.task import Task
-from no_human.review.reviewer import (
-    AdversarialReviewer,
-    ReviewerUnavailable,
-    _DIFF_CAP,
-    _git_diff,
-)
-
-
-def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
-    ).stdout
-
-
-def _repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test")
-    (repo / "seed.txt").write_text("seed\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "seed")
-    return repo
-
-
-def _passing_verdict() -> str:
-    data = {
-        "passed": True,
-        "stages": {
-            "spec_compliance": {"passed": True},
-            "code_quality": {"passed": True},
-        },
-        "suggested_next": None,
-        "goal": {"reachable": True, "entry_point": "x.py:1", "evidence": "ok"},
-        "items": [{"label": "ok", "passed": True, "severity": "low", "evidence": "ok"}],
-    }
-    return "REVIEW_JSON_START\n" + json.dumps(data) + "\nREVIEW_JSON_END\n"
-
-
-def test_small_diff_is_byte_identical(tmp_path: Path):
-    repo = _repo(tmp_path)
-    (repo / "a.txt").write_text("changed\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "change")
-    expected = subprocess.run(
-        ["git", "-c", "core.fsmonitor=false", "diff", "HEAD~1..HEAD", "--stat", "--patch",
-         "--no-color", "--no-ext-diff", "--no-textconv"],
-        cwd=repo, check=True, capture_output=True, text=True,
-    ).stdout
-    rendered, total, cuts = _git_diff(repo)
-    assert rendered == expected
-    assert total == len(expected)
-    assert cuts == []
-
-
-def test_large_diff_budgets_every_file_and_names_cut_paths(tmp_path: Path):
-    repo = _repo(tmp_path)
-    for name, char in (("a.txt", "a"), ("b.txt", "b"), ("tests.txt", "t")):
-        (repo / name).write_text("\n".join(f"{char}{i:05d}" for i in range(9000)) + "\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "large")
-    rendered, total, cuts = _git_diff(repo)
-    assert total > _DIFF_CAP
-    assert len(rendered) <= _DIFF_CAP
-    assert set(cuts) == {"a.txt", "b.txt", "tests.txt"}
-    for path in ("a.txt", "b.txt", "tests.txt"):
-        assert f"diff --git a/{path} b/{path}" in rendered
-        assert f"- {path}\n" in rendered
-
-
-class _Backend:
-    model = "test"
-
-    def __init__(self, inspect: str | None = None):
-        self.inspect = inspect
-        self.calls = 0
-
-    async def run(self, prompt, *, cwd, max_turns, effort, on_event):
-        self.calls += 1
-        if self.inspect:
-            on_event(AgentEvent("tool_use", tool_name="Read", tool_input={"file_path": self.inspect}))
-        return AgentResult(
-            final_text=_passing_verdict(), num_turns=1, is_error=False,
-            tokens_used=1, session_id="s", stop_reason="end_turn",
-        )
-
-
-@pytest.mark.asyncio
-async def test_pass_without_inspecting_a_cut_file_is_not_a_verdict(tmp_path: Path):
-    backend = _Backend()
-    reviewer = AdversarialReviewer(backend=backend)
-    decision, reason, result = await reviewer._review_once(
-        "prompt", tmp_path, max_turns=1, timeout=5,
-        required_inspections=["tests/test_hidden.py"],
-    )
-    assert decision is None
-    assert result is not None
-    assert "tests/test_hidden.py" in reason
-
-
-@pytest.mark.asyncio
-async def test_pass_after_tool_call_names_the_cut_file_is_allowed(tmp_path: Path):
-    backend = _Backend("tests/test_hidden.py")
-    reviewer = AdversarialReviewer(backend=backend)
-    decision, reason, result = await reviewer._review_once(
-        "prompt", tmp_path, max_turns=1, timeout=5,
-        required_inspections=["tests/test_hidden.py"],
-    )
-    assert decision is not None and decision.passed
-    assert reason == ""
-    assert result is not None
-
-
-@pytest.mark.asyncio
-async def test_repeated_uninspected_pass_escalates_as_reviewer_unavailable(tmp_path: Path):
-    backend = _Backend()
-    reviewer = AdversarialReviewer(backend=backend)
-    with pytest.raises(ReviewerUnavailable, match="without inspecting truncated changed file"):
-        await reviewer._agent_review(
-            "prompt", tmp_path, max_turns=1, timeout=5,
-            required_inspections=["tests/test_hidden.py"],
-        )
-    assert backend.calls == 2
-''')
-
-          Path('contributors/mhmdwaelanwr.md').write_text('''# mhmdwaelanwr\n\nI have read CLA.md version 1.0 and I agree to it.\n\n- GitHub: @mhmdwaelanwr\n- Name: Mohamed Anwar\n- Date: 2026-09-16\n- Signing as: myself\n''')
-          PY
-
-      - name: Sync dependencies
-        run: uv sync --frozen
-
-      - name: Re-pin release manifest
-        run: uv run python scripts/check_release_manifest.py --write
-
-      - name: Run focused tests
-        run: >-
-          uv run pytest -q
-          tests/test_diff_coverage.py
-          tests/test_reviewer.py
-          tests/test_git_config_exec.py
-          tests/test_structural_budget.py
-
-      - name: Verify release manifest
-        run: uv run python scripts/check_release_manifest.py --strict
-
-      - name: Commit validated fix
-        shell: bash
-        run: |
+          rm -f .github/scripts/patch_437.py .github/workflows/patch-437.yml
           git config user.name "Mohamed Anwar"
-          git config user.email "mhmdwaelanwr@users.noreply.github.com"
-          git rm .github/workflows/patch-437.yml
+          git config user.email "mhmdwaelanwr@gmail.com"
           git add -A
-          git commit -m "fix(review): preserve coverage across large diffs"
+          git diff --cached --check
+          git commit -m "fix(review): preserve coverage for capped diffs"
           git push origin HEAD:fix/review-diff-coverage-437
