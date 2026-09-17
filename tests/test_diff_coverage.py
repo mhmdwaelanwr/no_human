@@ -251,3 +251,14 @@ def test_no_coverage_note_when_nothing_was_actually_cut():
     rendered, cut = budget_diff(raw, 4000)
     assert len(raw) > 4000 and cut == []
     assert "DIFF COVERAGE" not in rendered
+
+
+def test_an_absolute_fixture_copy_still_counts_and_the_docstring_says_so():
+    """The residual the module docstring names, pinned so it cannot quietly
+    change meaning: relative fixture copies are rejected, absolute ones are
+    not, because anchoring the suffix needs a repo root this layer lacks."""
+    from no_human.review.diff_coverage import _names_path
+    required = "src/no_human/api/app.py"
+    assert not _names_path("testdata/corpus/x/base/" + required, required)
+    assert _names_path("/root/testdata/corpus/x/base/" + required, required)
+    assert _names_path("/root/" + required, required)

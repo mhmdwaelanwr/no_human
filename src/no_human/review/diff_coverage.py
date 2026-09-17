@@ -188,8 +188,15 @@ def _names_path(token: str, required: str) -> bool:
     A RELATIVE token therefore has to BE the path. Only an ABSOLUTE one may
     carry it as a suffix, which is the case that motivated suffix matching in
     the first place: the reviewer works in a throwaway clone and may name a
-    file by its full path under that root. All 92 pairs fail this; every
-    spelling of a genuine read still passes.
+    file by its full path under that root. Every spelling of a genuine read
+    still passes.
+
+    What that closes, exactly, and no more: all 92 pairs fail when spelled
+    RELATIVELY, which is how a reviewer names a file in the clone it works
+    in. An ABSOLUTE token is still only checked by suffix, so an absolute
+    path to a fixture COPY of a cut file — `/root/testdata/.../src/a.py` for
+    required `src/a.py` — satisfies it. Closing that needs the repo root to
+    anchor against, which this layer is not given.
 
     Not handled, and deliberately not claimed: a Windows-style token with
     backslash separators never matched under containment either, because the
