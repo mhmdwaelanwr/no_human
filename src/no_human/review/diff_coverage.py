@@ -145,7 +145,12 @@ def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
         path for path, chunk, take in zip(paths, chunks, allocation)
         if take < len(chunk) and path not in TRUSTED_COVERAGE_EXCLUSIONS
     ]
-    note = _COVERAGE_NOTE + "".join(f"- {path}\n" for path in cut_paths)
+    # Only when something really was cut. A large PREFIX can push `raw` over
+    # the cap while every patch still fits, and the header alone told the
+    # reviewer patches had been cut and then listed none — an instruction it
+    # could not follow, about a thing that did not happen.
+    note = ("" if not cut_paths else
+            _COVERAGE_NOTE + "".join(f"- {path}\n" for path in cut_paths))
     rendered = prefix[:prefix_budget] + "".join(
         chunk[:take] for chunk, take in zip(chunks, allocation)
     ) + note

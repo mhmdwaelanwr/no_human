@@ -239,3 +239,15 @@ def test_tracker_finds_a_path_named_inside_free_form_text():
     tracker = InspectionTracker(["tests/a.py", "src/b.py"])
     tracker.note_event(_tool_use({"prompt": "Read tests/a.py, then src/b.py:14"}))
     assert tracker.unreferenced() == []
+
+
+def test_no_coverage_note_when_nothing_was_actually_cut():
+    """A large prefix can push the raw diff over the cap while every patch
+    still fits. The header alone then told the reviewer that patches had been
+    cut and listed none — an instruction it could not follow, about something
+    that did not happen."""
+    prefix = "commit log line\n" * 900
+    raw = prefix + _chunk("a.py", "new") + _chunk("b.py", "new")
+    rendered, cut = budget_diff(raw, 4000)
+    assert len(raw) > 4000 and cut == []
+    assert "DIFF COVERAGE" not in rendered
