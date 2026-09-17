@@ -202,3 +202,40 @@ def test_tracker_survives_a_tool_input_that_is_missing_or_not_a_mapping():
     tracker.note_event(AgentEvent("tool_use", tool_name="Read", tool_input=None))
     tracker.note_event(_tool_use({"n": 3, "ok": True, "none": None}))
     assert tracker.unreferenced() == ["a.py"]
+
+
+@pytest.mark.parametrize(("token", "required"), [
+    ("tests/hidden.py", "tests/hidden.py"),                 # the ordinary case
+    ("./src/a.py", "src/a.py"),                             # cwd-relative spelling
+    ("/private/tmp/nh-x/src/a.py", "src/a.py"),             # absolute, under a clone root
+    ("/private/tmp/nh-x/Dockerfile", "Dockerfile"),         # ... including a root-level file
+])
+def test_tracker_counts_every_spelling_of_a_genuine_read(token, required):
+    tracker = InspectionTracker([required])
+    tracker.note_event(_tool_use({"file_path": token}))
+    assert tracker.unreferenced() == []
+
+
+@pytest.mark.parametrize(("token", "required"), [
+    ("Dockerfile.mcp", "Dockerfile"),                       # name-prefix collision
+    ("data.py", "a.py"),                                    # bare substring
+    ("web/.gitignore", ".gitignore"),                       # same basename, other directory
+    ("eval/reviewer_recall/cases/x/base/src/no_human/api/app.py",
+     "src/no_human/api/app.py"),                            # a fixture COPY of the real file
+])
+def test_tracker_does_not_count_a_different_file(token, required):
+    """Containment let the WRONG file satisfy a required path. Over this
+    repository's own tracked files 92 pairs are substrings of each other, so
+    this is not hypothetical: a reviewer that read `Dockerfile.mcp` was
+    recorded as having covered `Dockerfile`, and the verdict stood."""
+    tracker = InspectionTracker([required])
+    tracker.note_event(_tool_use({"file_path": token}))
+    assert tracker.unreferenced() == [required]
+
+
+def test_tracker_finds_a_path_named_inside_free_form_text():
+    """A tool input is not one path — a prompt or a `file.py:14` citation has
+    to be split before the comparison can be exact."""
+    tracker = InspectionTracker(["tests/a.py", "src/b.py"])
+    tracker.note_event(_tool_use({"prompt": "Read tests/a.py, then src/b.py:14"}))
+    assert tracker.unreferenced() == []

@@ -154,6 +154,46 @@ def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
     return rendered, cut_paths
 
 
+_PATH_TOKEN = re.compile(r"[A-Za-z0-9._/+@-]+")
+
+
+def _path_tokens(text: str) -> list[str]:
+    """The path-shaped runs in a free-form tool-input string.
+
+    A tool input is not one path: it can be `"Read src/a.py then tests/a.py"`,
+    a `file.py:14` citation, or a quoted list. Splitting on everything that
+    cannot appear in a path leaves the candidates, and `./x` is written
+    `x` so the comparison below has one spelling to handle.
+    """
+    return [token[2:] if token.startswith("./") else token
+            for token in _PATH_TOKEN.findall(text)]
+
+
+def _names_path(token: str, required: str) -> bool:
+    """Does `token` name the file at repo-relative path `required`?
+
+    Substring containment is what this replaced, and it let the WRONG file
+    satisfy a required path: measured over this repository's own tracked
+    files, 92 pairs are substrings of each other — `Dockerfile` inside
+    `Dockerfile.mcp`, `.gitignore` inside `web/.gitignore`,
+    `src/no_human/api/app.py` inside its copy under
+    `eval/reviewer_recall/cases/*/base/`. A reviewer that read any of the
+    longer ones was recorded as having covered the shorter one.
+
+    A RELATIVE token therefore has to BE the path. Only an ABSOLUTE one may
+    carry it as a suffix, which is the case that motivated suffix matching in
+    the first place: the reviewer works in a throwaway clone and may name a
+    file by its full path under that root. All 92 pairs fail this; every
+    spelling of a genuine read still passes.
+
+    Not handled, and deliberately not claimed: a Windows-style token with
+    backslash separators never matched under containment either, because the
+    required paths are written with `/`.
+    """
+    return token == required or (
+        token.startswith("/") and token.endswith("/" + required))
+
+
 class InspectionTracker:
     """Did the reviewer ever bring up each path `budget_diff` had to cut?
 
@@ -167,6 +207,13 @@ class InspectionTracker:
     deliberate floor — it catches the verdict reached without the path coming
     up at all — and it is why `rejection()` says "referencing" and not
     "inspecting": the message must not claim more than the evidence carries.
+
+    Scope, so the gap is recorded rather than discovered: only the PRIMARY
+    diff's cut paths are tracked. `_linked_repos_review_section` drops the cut
+    paths of a linked repo (the `_cut_paths` it names and does not use), so a
+    truncated linked-repo patch can still reach a verdict unread. That is the
+    same failure in a narrower place than the one this closes, and widening
+    the check belongs with whoever gives linked repos coverage that matters.
     """
 
     def __init__(self, required: Iterable[str] | None = None) -> None:
@@ -191,7 +238,9 @@ class InspectionTracker:
             elif isinstance(value, (list, tuple, set)):
                 stack.extend(value)
             elif isinstance(value, str):
-                self._seen.update(path for path in self._required if path in value)
+                for token in _path_tokens(value):
+                    self._seen.update(
+                        path for path in self._required if _names_path(token, path))
 
     def unreferenced(self) -> list[str]:
         """Required paths that never appeared in any tool input, sorted."""
