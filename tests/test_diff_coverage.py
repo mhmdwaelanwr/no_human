@@ -220,7 +220,7 @@ def test_tracker_counts_every_spelling_of_a_genuine_read(token, required):
     ("Dockerfile.mcp", "Dockerfile"),                       # name-prefix collision
     ("data.py", "a.py"),                                    # bare substring
     ("web/.gitignore", ".gitignore"),                       # same basename, other directory
-    ("eval/reviewer_recall/cases/x/base/src/no_human/api/app.py",
+    ("testdata/corpus/case-x/base/src/no_human/api/app.py",
      "src/no_human/api/app.py"),                            # a fixture COPY of the real file
 ])
 def test_tracker_does_not_count_a_different_file(token, required):

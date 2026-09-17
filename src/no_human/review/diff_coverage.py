@@ -175,10 +175,10 @@ def _names_path(token: str, required: str) -> bool:
     Substring containment is what this replaced, and it let the WRONG file
     satisfy a required path: measured over this repository's own tracked
     files, 92 pairs are substrings of each other — `Dockerfile` inside
-    `Dockerfile.mcp`, `.gitignore` inside `web/.gitignore`,
-    `src/no_human/api/app.py` inside its copy under
-    `eval/reviewer_recall/cases/*/base/`. A reviewer that read any of the
-    longer ones was recorded as having covered the shorter one.
+    `Dockerfile.mcp`, `.gitignore` inside `web/.gitignore`, and every source
+    file that a test-fixture corpus keeps a verbatim copy of, whose copy's
+    path ends with the original's. A reviewer that read any of the longer
+    ones was recorded as having covered the shorter one.
 
     A RELATIVE token therefore has to BE the path. Only an ABSOLUTE one may
     carry it as a suffix, which is the case that motivated suffix matching in
