@@ -47,7 +47,7 @@ from ..review.wiring_evidence import (
 )
 from ..core.jsonparse import loads_lenient
 from ..core.task import Task
-from .diff_coverage import DiffCoverageError, budget_diff
+from .diff_coverage import DiffCoverageError, InspectionTracker, budget_diff
 
 log = logging.getLogger(__name__)
 
@@ -2653,8 +2653,7 @@ class AdversarialReviewer:
                 prompt, repo_path, before_ref="HEAD", verify_citations=False)
 
         # Gate mode (default): original adversarial review.
-        full_files, omitted_files = "", []
-        cut_paths: list[str] = []
+        full_files, omitted_files, cut_paths = "", [], []
         lint_evidence = ""
         wiring_evidence = ""
         type_evidence = ""
@@ -3202,24 +3201,13 @@ class AdversarialReviewer:
         decision it returns.
         """
         all_text_parts: list[str] = []
-        required = set(required_inspections or ())
-        inspected: set[str] = set()
+        tracker = InspectionTracker(required_inspections)
         original_on_event = self._on_event
 
         def _capture_event(event):
             if event.text:
                 all_text_parts.append(event.text)
-            if required and getattr(event, "kind", "") == "tool_use":
-                payload = getattr(event, "tool_input", None) or {}
-                stack = [payload]
-                while stack:
-                    value = stack.pop()
-                    if isinstance(value, dict):
-                        stack.extend(value.values())
-                    elif isinstance(value, (list, tuple, set)):
-                        stack.extend(value)
-                    elif isinstance(value, str):
-                        inspected.update(path for path in required if path in value)
+            tracker.note_event(event)
             if original_on_event:
                 original_on_event(event)
 
@@ -3292,8 +3280,7 @@ class AdversarialReviewer:
         # Default None, not 0 — an absent split must stay distinguishable from
         # a measured zero all the way to `attempts.review_output_tokens`.
         decision.output_tokens = getattr(result, "output_tokens", None)
-        missing = sorted(required - inspected)
-        if missing:
-            return None, ("reviewer reached a verdict without inspecting truncated "
-                          f"changed file(s): {", ".join(missing)}"), result
+        rejection = tracker.rejection()
+        if rejection:
+            return None, rejection, result
         return decision, "", result

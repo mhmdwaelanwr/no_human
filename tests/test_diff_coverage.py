@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from no_human.agent.claude_backend import AgentEvent, AgentResult
-from no_human.review.diff_coverage import DiffCoverageError, budget_diff
+from no_human.review.diff_coverage import (
+    DiffCoverageError,
+    InspectionTracker,
+    budget_diff,
+)
 from no_human.review.reviewer import (
     AdversarialReviewer,
     ReviewerUnavailable,
@@ -137,3 +141,64 @@ async def test_inspected_cut_file_allows_the_real_verdict(tmp_path):
     )
     assert decision.passed is True
     assert backend.calls == 1
+
+
+# ── InspectionTracker ─────────────────────────────────────────────────── #
+# The reviewer-level tests above prove the wiring. These pin the traversal
+# itself, which is the part that decides whether a real tool call counts.
+
+
+def _tool_use(payload):
+    return AgentEvent("tool_use", tool_name="Read", tool_input=payload)
+
+
+def test_tracker_accepts_a_path_named_anywhere_in_a_nested_tool_input():
+    """A tool input is arbitrary nested JSON — a path can arrive under a key,
+    inside a list of edits, or embedded in a search pattern. The walker must
+    find it in all three, or the check rejects verdicts that did the work."""
+    tracker = InspectionTracker(["tests/hidden.py", "src/deep.py", "src/pat.py"])
+    tracker.note_event(_tool_use({"file_path": "tests/hidden.py"}))
+    tracker.note_event(_tool_use({"edits": [{"path": "src/deep.py", "old": "x"}]}))
+    tracker.note_event(_tool_use({"pattern": "def f", "glob": "src/pat.py"}))
+    assert tracker.unreferenced() == []
+    assert tracker.rejection() == ""
+
+
+def test_tracker_counts_only_tool_calls_that_actually_ran():
+    """Prose is not evidence, and neither is a BLOCKED call. `denied` events
+    carry a `tool_input` of their own — `agent/codex_backend.py` emits one for
+    every guard-blocked call — so without the `tool_use` guard a reviewer whose
+    read was refused would satisfy the coverage check having seen nothing."""
+    tracker = InspectionTracker(["tests/hidden.py"])
+    tracker.note_event(AgentEvent("text", text="I reviewed tests/hidden.py closely"))
+    tracker.note_event(AgentEvent("thinking", text="tests/hidden.py looks fine"))
+    tracker.note_event(AgentEvent("denied", tool_name="Read",
+                                  tool_input={"file_path": "tests/hidden.py"}))
+    assert tracker.unreferenced() == ["tests/hidden.py"]
+
+
+def test_tracker_rejection_names_every_missing_path_and_claims_only_reference():
+    tracker = InspectionTracker(["b.py", "a.py"])
+    tracker.note_event(_tool_use({"file_path": "a.py"}))
+    rejection = tracker.rejection()
+    assert "b.py" in rejection and "a.py" not in rejection.split("file(s): ")[1]
+    # The evidence is a tool INPUT, so "referencing" is all it establishes.
+    assert "without referencing" in rejection
+    assert "inspecting" not in rejection
+
+
+def test_tracker_with_nothing_required_never_rejects():
+    """The common path: the diff fit under the cap, so nothing was cut."""
+    tracker = InspectionTracker(None)
+    tracker.note_event(_tool_use({"file_path": "whatever.py"}))
+    assert tracker.unreferenced() == []
+    assert tracker.rejection() == ""
+
+
+def test_tracker_survives_a_tool_input_that_is_missing_or_not_a_mapping():
+    """A backend may emit `tool_use` with no input at all. Raising here would
+    kill a review session over a malformed event."""
+    tracker = InspectionTracker(["a.py"])
+    tracker.note_event(AgentEvent("tool_use", tool_name="Read", tool_input=None))
+    tracker.note_event(_tool_use({"n": 3, "ok": True, "none": None}))
+    assert tracker.unreferenced() == ["a.py"]

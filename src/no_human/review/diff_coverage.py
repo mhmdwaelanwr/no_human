@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import re
 import shlex
+from collections.abc import Iterable
 
 
 TRUSTED_COVERAGE_EXCLUSIONS: frozenset[str] = frozenset()
@@ -151,3 +152,55 @@ def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
     if len(rendered) > cap:
         raise DiffCoverageError("bounded diff exceeded its cap after rendering")
     return rendered, cut_paths
+
+
+class InspectionTracker:
+    """Did the reviewer ever bring up each path `budget_diff` had to cut?
+
+    Lives here rather than in the reviewer because it is the other half of
+    `_COVERAGE_NOTE` above: that note names the cut paths and asks for them to
+    be read, and this decides whether the ask was honoured.
+
+    REFERENCE, never inspection. The evidence is the tool call's INPUT, so a
+    path that merely appears in a search string counts, and a file whose
+    contents were never read is indistinguishable from one that was. That is a
+    deliberate floor — it catches the verdict reached without the path coming
+    up at all — and it is why `rejection()` says "referencing" and not
+    "inspecting": the message must not claim more than the evidence carries.
+    """
+
+    def __init__(self, required: Iterable[str] | None = None) -> None:
+        self._required = set(required or ())
+        self._seen: set[str] = set()
+
+    def note_event(self, event: object) -> None:
+        """Record every required path named anywhere in a tool call's input.
+
+        The input is arbitrary nested JSON, so this walks it rather than
+        reading known keys: a path can arrive under `file_path`, inside a
+        `pattern`, or in one element of a list of edits, and a walker cannot
+        be out of date with the tool schema.
+        """
+        if not self._required or getattr(event, "kind", "") != "tool_use":
+            return
+        stack = [getattr(event, "tool_input", None) or {}]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                stack.extend(value.values())
+            elif isinstance(value, (list, tuple, set)):
+                stack.extend(value)
+            elif isinstance(value, str):
+                self._seen.update(path for path in self._required if path in value)
+
+    def unreferenced(self) -> list[str]:
+        """Required paths that never appeared in any tool input, sorted."""
+        return sorted(self._required - self._seen)
+
+    def rejection(self) -> str:
+        """Why this verdict must not stand, or "" when every path came up."""
+        missing = self.unreferenced()
+        if not missing:
+            return ""
+        return ("reviewer reached a verdict without referencing truncated "
+                f"changed file(s): {', '.join(missing)}")
