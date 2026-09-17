@@ -6072,6 +6072,48 @@ def review(target, repo):
     asyncio.run(_go())
 
 
+@cli.command("gate")
+@click.option("--repo", default=".", type=click.Path(exists=True),
+              help="Git checkout to run the gate over (default: cwd).")
+@click.option("--pr", "pr_url", default=None,
+              help="GitHub pull request URL to review instead of the current branch.")
+@click.option("--base", default=None,
+              help="Override the comparison base ref (default: origin/<default branch>).")
+@click.option("--title", default="", help="Task title recorded for the review session.")
+@click.option("--description", default="",
+              help="Task description recorded for the review session.")
+def gate(repo, pr_url, base, title, description):
+    """Run the review gate once over this branch or a PR. No server, no database.
+
+    Runs the fresh-session adversarial reviewer and the tamper guard over the
+    working tree branch (against its merge base) or, with --pr, a GitHub pull
+    request — and prints a Markdown pass/fail checklist with file:line
+    citations. Never commits, pushes, merges, or edits a tracked file. The
+    rest of the write surface: reading (never creating)
+    ~/.no_human/config.yaml if present; the background update check, which
+    caches into ~/.no_human/cache/; one throwaway local clone per run, in a
+    temp dir; and, with --pr only, one `git fetch` into THIS checkout (writes
+    `FETCH_HEAD` and objects, creates no branch, moves no ref you own). Requires the user's own Claude credential
+    (`claude setup-token`), exactly as every other `nh` command does.
+    """
+    from ..review.oneshot import GateUnavailable, render_markdown, run_gate
+
+    async def _go():
+        try:
+            result = await run_gate(
+                Path(repo).resolve(), pr_url=pr_url, base=base,
+                title=title, description=description,
+            )
+        except GateUnavailable as exc:
+            console.print(f"[bold red]cannot run the gate:[/] {escape(str(exc))}",
+                          soft_wrap=True)
+            sys.exit(2)
+        console.print(escape(render_markdown(result)), soft_wrap=True)
+        sys.exit(0 if result.passed else 1)
+
+    asyncio.run(_go())
+
+
 @cli.command("investigate")
 @click.argument("question", required=False)
 @click.option("--repo", default=".", help="Repo to investigate.")
@@ -7287,6 +7329,65 @@ def doctor(verbose, verify_auth, fix_walks, dry_run):
     # unchanged — anything parsing stdout keeps working.
     if not asyncio.run(_go()):
         sys.exit(1)
+
+
+@cli.command("diverged")
+@click.option("--json", "as_json", is_flag=True,
+              help="Print machine-readable JSON instead of a table.")
+def diverged(as_json):
+    """Measure how many live tasks have a branch diverged from its own
+    pushed tip (acceptance criterion 5 of the recut fix — size the problem
+    instead of assuming it).
+
+    Read-only: this never pushes, fetches into a tracking ref, or writes to
+    the task store — it only classifies each live task's branch(es) against
+    their own remote tip via `git ls-remote` + local ancestry checks.
+
+    \b
+    Exit code is always 0 — this is informational, not a gate: a diverged
+    branch a recut already recovered from is not itself a failure.
+    """
+    from ..core.diverged_audit import audit_diverged_tasks
+
+    config, _ = _bootstrap(require_auth=False)
+
+    async def _go():
+        async with Store(config.db_path) as store:
+            report = await audit_diverged_tasks(store, config.data)
+
+        if as_json:
+            # click.echo, not console.print: Rich wraps long lines (a task
+            # title), corrupting the embedded JSON with a stray newline.
+            click.echo(json.dumps({
+                "scanned": report.scanned,
+                "counts": report.counts,
+                "rows": [
+                    {
+                        "task_id": r.task_id,
+                        "title": r.title,
+                        "branch": r.branch,
+                        "local_sha": r.local_sha,
+                        "remote_sha": r.remote_sha,
+                        "state": r.state,
+                    }
+                    for r in report.rows
+                ],
+            }, indent=2))
+            return True
+
+        for r in report.rows:
+            if r.state == "up_to_date":
+                continue
+            colour = {"diverged": "red", "behind": "yellow"}.get(r.state, "dim")
+            console.print(
+                f"[{colour}]{r.state:<10}[/] {r.task_id}  {r.branch}  "
+                f"[dim]{r.title}[/]")
+        console.print(
+            f"{report.diverged_count} task(s) diverged of {report.scanned} "
+            f"live task(s) scanned")
+        return True
+
+    asyncio.run(_go())
 
 
 @cli.command("start")

@@ -889,6 +889,31 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     # GIT_SUBCOMMANDS classifies LOCAL, and ALLOWLIST names only what can leave
     # the machine. test_no_stale_allowlist_entries is what forced the old line
     # out when the probe went — it failed naming exactly this entry.
+    # The one-shot gate (`nh gate` / `nh gate --pr <url>`, `review/oneshot.py`):
+    # fetching a PR by number without creating or deleting a branch ref, unlike
+    # `orchestrator._fetch_pr_diff`'s `_nh_review_pr` branch. Additive and
+    # idempotent — writes only objects and `FETCH_HEAD` — but it is still a
+    # round-trip to the remote, so it is named here like every other fetch.
+    "review/oneshot.py": {
+        "exec:git fetch": Allowed(
+            "your git remote — `git fetch origin refs/pull/<n>/head` at "
+            ":389, to compare a PR's head against its merge base",
+            "user-invoked: only when `nh gate --pr <url>` is given a pull "
+            "request URL; the default `nh gate` (current branch) never "
+            "reaches this path"),
+        "exec:git clone": Allowed(
+            "no remote at all — `git clone --local --shared --no-checkout` "
+            "at :473 clones the user's own repo (whatever ref it is on) "
+            "into a throwaway temp directory so the reviewed head can be "
+            "checked out for citation verification against the exact "
+            "reviewed tree, never the user's live working tree; `--local` "
+            "reads the source repo's object store directly and never dials "
+            "a network URL",
+            "user-invoked: runs on EVERY `nh gate` invocation, default "
+            "(current branch) and `--pr <url>` alike — `_materialized_head` "
+            "clones in both modes so a dirty working tree can never demote "
+            "a citation-backed finding"),
+    },
     "integrations/__init__.py": {
         "http:httpx": Allowed(
             "Jira / Linear / CircleCI / your Teams webhook — health checks",
@@ -982,6 +1007,21 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "external id or up to three keywords from its title",
             _CFG + "context.m365.token — absent from DEFAULT_CONFIG entirely; "
                    "the client raises before building the request"),
+    },
+    # The CAPTURE half of "onboarding email must reach our servers": forwards
+    # the address just entered at onboarding (plus a `desktop-<platform>`
+    # plan string) to a hosted registration intake, off-thread and after the
+    # local persist. Fail-open — never raises, never logs/returns the
+    # address (register_email's docstring). Reuses the existing waitlist
+    # intake's payload shape with `source: "onboarding"`.
+    "email/register.py": {
+        "http:urllib.request": Allowed(
+            "your configured onboarding registration intake — the email "
+            "address just registered, plus a `desktop-<platform>` plan "
+            "string and `source: \"onboarding\"`",
+            _CFG + "onboarding.registration_endpoint — empty/None by "
+                   "default, so an unconfigured install sends nothing; "
+                   "NH_ONBOARDING_REGISTER_URL env var can set/override it"),
     },
     "brain/client.py": {
         "http:httpx": Allowed("team_brain.control_plane_url — task patterns",
@@ -1089,6 +1129,20 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "The list is fixed at `_PREREQUISITES` + `_OPTIONAL` (:45-54): "
             "python3, git, uv, claude, each with `--version`",
             "user-invoked: `nh init` prerequisite check only"),
+    },
+    # The GitHub Action entrypoint (`python -m no_human.ci_action.run`) —
+    # a wholly separate one-shot distribution surface from `nh review`
+    # (cli/commands.py's queueing path). It never runs unless a repository's
+    # own workflow adds this Action to a `pull_request` job; write access is
+    # additionally mechanically confined to the PR's own comment thread by
+    # `_assert_write_allowed` (list/create/update `issues/.../comments` only —
+    # no merge, review, or PR-PATCH endpoint is reachable in code).
+    "ci_action/github.py": {
+        "http:httpx": Allowed(
+            "your GitHub host's REST API — read, create, or update the "
+            "review gate's own single PR comment; nothing else is reachable",
+            "user-invoked: only inside the `no_human review gate` GitHub "
+            "Action, one call per job"),
     },
 
     # -- Developer tooling: the bench, not the installed run path ----------
