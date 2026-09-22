@@ -659,7 +659,10 @@ def test_check_diagnoses_crlf_hash_matches_instead_of_recommending_write(tmp_pat
     assert "README.md" in proc.stderr
     assert "core.autocrlf=" in proc.stderr
     assert "Do NOT run --write" in proc.stderr
-    assert "regenerate with 'python scripts/check_release_manifest.py --write'" not in proc.stderr
+    # Backticks, matching what the script really prints (`REMEDY: regenerate
+    # with \`python ...\``). Asserted with single quotes this could never fail:
+    # the substring did not occur on ANY branch, so the guard was vacuous.
+    assert "regenerate with `python scripts/check_release_manifest.py" not in proc.stderr
 
 
 def test_write_refuses_crlf_only_drift_and_leaves_manifest_unchanged(tmp_path):
